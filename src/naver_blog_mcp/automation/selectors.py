@@ -1,103 +1,31 @@
 """네이버 블로그 DOM 셀렉터 정의.
 
-네이버 UI 변경에 대응하기 위해 대체 셀렉터를 리스트로 관리합니다.
+네이버 UI가 바뀌면 이 파일만 고치면 되도록 셀렉터를 한곳에 모아 둡니다.
+발행 영역의 클래스명은 빌드마다 해시 접미사가 바뀌므로(`publish_btn__m9KHH`)
+접두사 부분 일치(`[class*='publish_btn']`)로 찾습니다.
 """
 
-from typing import List, Union
+# 로그인 페이지
+LOGIN_ID_INPUT = "#id"
+LOGIN_PW_INPUT = "#pw"
+LOGIN_BTN = ["button[id^='loginBtn']:visible", ".btn_login"]
+LOGIN_STAY_CHECKBOX = "#loginStay"
 
-# 타입 정의
-Selector = Union[str, List[str]]
+# 스마트에디터 ONE
+EDITOR_ROOT = ".se-content"
+EDITOR_TITLE = ".se-documentTitle .se-text-paragraph"
+EDITOR_TEXT_PARAGRAPH = ".se-component.se-text .se-text-paragraph"
 
+# 에디터 팝업
+EDITOR_POPUP_CANCEL = ".se-popup-alert-confirm .se-popup-button-cancel"
+EDITOR_HELP_CLOSE = "button.se-help-panel-close-button"
+EDITOR_TOAST = ".se-toast-popup, [class*='toast']"
 
-class NaverSelectors:
-    """네이버 블로그 셀렉터 클래스."""
-
-    # 로그인 페이지
-    LOGIN = {
-        "id_input": "#id",
-        "pw_input": "#pw",
-        "login_btn": [".btn_login", "button[type='submit']"],
-        "error_message": ".error_message",
-    }
-
-    # 블로그 메인
-    BLOG_MAIN = {
-        "profile": [".my_nick", ".profile_info"],
-        "write_btn": ["a[href*='PostWriteForm']", ".write_btn"],
-    }
-
-    # 글쓰기 페이지
-    POST_WRITE = {
-        "title_input": [
-            "div[contenteditable='true'][data-placeholder='제목']",  # 스마트에디터 ONE
-            "div[contenteditable='true']:has-text('제목')",
-            "input[placeholder*='제목']",
-            "#title",
-            ".se-title-input",
-        ],
-        "content_frame": ["iframe.se-iframe", "iframe#mainFrame"],
-        "content_body": [
-            "div[contenteditable='true']",  # 일반 contenteditable
-            ".se-component-content",
-            ".se-text-paragraph",
-        ],
-        "category_select": [".blog2_series", "select[name='category']"],
-        "tag_input": ["input[placeholder*='태그']", ".tag_input"],
-        "publish_btn": [
-            "button:has-text('발행')",
-            ".publish_btn",
-            "button[type='submit']",
-        ],
-        "temp_save_btn": ["button:has-text('임시저장')", ".temp_save_btn"],
-        "image_upload_btn": [
-            "button[aria-label='사진']",
-            ".image_upload",
-            "button:has-text('사진')",
-        ],
-    }
-
-    # 글 보기 페이지
-    POST_VIEW = {
-        "post_url_pattern": "**/PostView.naver*",
-        "edit_btn": ["a:has-text('수정')", ".edit_btn"],
-        "delete_btn": ["a:has-text('삭제')", ".delete_btn"],
-    }
-
-    @classmethod
-    def get_selector(cls, category: str, key: str) -> Selector:
-        """
-        카테고리와 키로 셀렉터 가져오기.
-
-        Args:
-            category: 셀렉터 카테고리 (LOGIN, BLOG_MAIN, POST_WRITE, POST_VIEW)
-            key: 셀렉터 키
-
-        Returns:
-            셀렉터 문자열 또는 대체 셀렉터 리스트
-
-        Raises:
-            KeyError: 존재하지 않는 카테고리나 키
-        """
-        category_dict = getattr(cls, category, None)
-        if category_dict is None:
-            raise KeyError(f"존재하지 않는 카테고리: {category}")
-
-        selector = category_dict.get(key)
-        if selector is None:
-            raise KeyError(f"존재하지 않는 셀렉터 키: {key}")
-
-        return selector
-
-
-# 편의를 위한 상수
-LOGIN_ID_INPUT = NaverSelectors.LOGIN["id_input"]
-LOGIN_PW_INPUT = NaverSelectors.LOGIN["pw_input"]
-LOGIN_BTN = NaverSelectors.LOGIN["login_btn"]
-
-# 글쓰기 관련 상수
-POST_WRITE_TITLE = NaverSelectors.POST_WRITE["title_input"]
-POST_WRITE_CONTENT_FRAME = NaverSelectors.POST_WRITE["content_frame"]
-POST_WRITE_CONTENT_BODY = NaverSelectors.POST_WRITE["content_body"]
-POST_WRITE_PUBLISH_BTN = NaverSelectors.POST_WRITE["publish_btn"]
-POST_WRITE_CATEGORY_BTN = NaverSelectors.POST_WRITE["category_select"]
-POST_WRITE_TAG_INPUT = NaverSelectors.POST_WRITE["tag_input"]
+# 임시저장 / 발행
+EDITOR_SAVE_BUTTON = "button[class*='save_btn']"
+EDITOR_PUBLISH_OPEN = "button[class*='publish_btn']"
+EDITOR_PUBLISH_LAYER = "[class*='layer_publish'], [class*='option_area']"
+EDITOR_PUBLISH_CONFIRM = "button[class*='confirm_btn']"
+EDITOR_CATEGORY_BUTTON = "button[class*='selectbox_button']"
+EDITOR_CATEGORY_ITEM = "[class*='option_list'] label, [class*='option_list'] li"
+EDITOR_TAG_INPUT = "input#tag-input, input[class*='tag_input']"

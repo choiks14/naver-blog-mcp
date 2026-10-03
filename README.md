@@ -7,322 +7,104 @@
 
 Playwright 기반 네이버 블로그 자동화를 위한 Model Context Protocol (MCP) 서버입니다. Claude가 네이버 블로그에 글을 작성하고 관리할 수 있도록 합니다.
 
-## 📋 프로젝트 개요
+> 이 저장소는 [space-cap/naver-blog-mcp](https://github.com/space-cap/naver-blog-mcp)의 포크입니다.
+> 아래 "포크에서 바뀐 점"을 먼저 읽어 주세요.
 
-네이버 블로그의 공식 API가 2020년에 종료됨에 따라, Playwright 웹 브라우저 자동화를 활용하여 MCP (Model Context Protocol) 서버를 구현합니다. AI 어시스턴트(Claude 등)가 네이버 블로그에 글을 작성할 수 있도록 지원합니다.
+## 포크에서 바뀐 점
 
-## ✨ 주요 기능
+- **임시저장이 기본값**: `publish`를 생략하면 임시저장하고, `publish=true`일 때만 공개 발행합니다. (원본은 `publish=false`여도 발행 버튼을 눌렀습니다.)
+- **사진과 글 순서 배치**: `blocks` 인자로 사진과 문단을 원하는 순서로 넣습니다. (원본은 사진을 올린 뒤 글쓰기 페이지를 새로 열어 사진이 남지 않았습니다.)
+- **카테고리·태그 적용**: 발행할 때 실제로 반영합니다. (원본은 인자만 받고 무시했습니다.)
+- **비밀번호 없는 로그인**: `naver-blog-mcp login`으로 브라우저에서 직접 로그인하고 세션만 저장합니다. 24시간마다 강제 재로그인하던 로직을 없앴습니다.
+- **MCP 통신 안정화**: stdout으로 나가던 `print` 로그를 없앴습니다. (stdio MCP 프로토콜을 깨뜨립니다.)
+- **경로 고정**: 세션·스크린샷·Trace 경로를 실행 위치와 무관하게 프로젝트 기준 절대 경로로 씁니다. Trace는 실패한 실행만 저장합니다.
+- **글 작성 자동 재시도 제거**: 재시도로 같은 글이 두 번 올라가는 것을 막습니다.
 
-- ✅ **네이버 로그인 자동화** (세션 저장/재사용)
-- ✅ **MCP 서버 구현** (Claude Desktop 연동)
-- ✅ **네이버 블로그 글 작성** (제목, 본문, 발행)
-- ✅ **이미지 업로드** (파일/Base64, 단일/다중, 7개 포맷 지원)
-- ✅ **에러 처리 및 재시도** (네트워크 에러 자동 복구, UI 변경 대응)
-- ✅ **디버깅 도구** (Playwright Trace, 자동 스크린샷)
-- ✅ **카테고리 조회** (블로그 카테고리 목록)
+### 검증 상태
 
-## 🛠️ 기술 스택
+- 단위 테스트(`uv run pytest`)는 통과합니다.
+- 로그인 페이지 셀렉터는 2026-10 기준 실제 페이지에서 확인했습니다.
+- **에디터 조작(제목·본문·사진·임시저장·발행)은 아직 실제 계정으로 검증하지 못했습니다.** 셀렉터는 `src/naver_blog_mcp/automation/selectors.py` 한 곳에 모여 있으니, 동작하지 않으면 `tests/manual/live_draft_check.py`로 확인하며 이 파일을 고치면 됩니다.
 
-- **Python 3.13**
-- **Playwright 1.55.0** - 웹 브라우저 자동화
-- **MCP SDK** - Model Context Protocol
-- **Pydantic** - 데이터 검증
-- **Tenacity** - 재시도 로직
-
-## 📦 설치
-
-### 1. 저장소 클론
+## 설치
 
 ```bash
-git clone https://github.com/space-cap/naver-blog-mcp.git
+git clone https://github.com/choiks14/naver-blog-mcp.git
 cd naver-blog-mcp
-```
-
-### 2. 의존성 설치
-
-```bash
-# uv를 사용하여 의존성 설치
 uv sync
-
-# Playwright 브라우저 다운로드 (필수!)
-uv run playwright install chromium
+cp .env.example .env
 ```
 
-### 3. 환경 변수 설정
+설치된 Google Chrome을 쓰려면 `.env`에 `BROWSER_CHANNEL=chrome`을 넣습니다. 번들 Chromium을 쓰려면 `uv run playwright install chromium`을 실행합니다.
+
+## 로그인
 
 ```bash
-# .env.example을 .env로 복사
-cp .env.example .env
-
-# .env 파일 편집
-# NAVER_BLOG_ID와 NAVER_BLOG_PASSWORD를 입력하세요
+uv run naver-blog-mcp login
 ```
 
-`.env` 파일 예시:
+브라우저 창이 뜨면 직접 로그인합니다(2단계 인증·CAPTCHA 포함). '로그인 상태 유지'를 체크하면 세션이 오래갑니다. 로그인 쿠키는 `playwright-state/auth.json`에 저장되며 Git에 올라가지 않습니다. 세션이 만료되면 Tool이 재로그인을 안내합니다.
 
-```env
-# 네이버 블로그 계정 정보
-NAVER_BLOG_ID=your_naver_id
-NAVER_BLOG_PASSWORD=your_password
+`.env`에 `NAVER_BLOG_ID`와 `NAVER_BLOG_PASSWORD`를 넣으면 세션 만료 시 자동 로그인을 시도하지만, 네이버가 CAPTCHA를 띄우는 경우가 많아 권장하지 않습니다.
 
-# Playwright 설정
-HEADLESS=false  # 디버깅 시 false로 설정
-SLOW_MO=100     # 액션 사이 딜레이 (ms)
+## MCP 등록
 
-# 로깅 레벨
-LOG_LEVEL=INFO
+Claude Code:
+
+```bash
+claude mcp add naver-blog -- uv run --directory /path/to/naver-blog-mcp naver-blog-mcp
 ```
 
-## 🚀 사용 방법
+Claude Desktop은 `claude_desktop_config.json` 예시를 참고하세요.
 
-### 방법 1: Claude Desktop과 연동 (권장)
+## MCP Tools
 
-Claude Desktop 설정 파일(`claude_desktop_config.json`)에 다음 추가:
+### `naver_blog_create_post`
+
+| 인자 | 설명 |
+|---|---|
+| `title` (필수) | 글 제목 |
+| `blocks` | 본문 블록 목록. `{"type":"text","text":"..."}` 또는 `{"type":"image","path":"/절대/경로.jpg"}` |
+| `content` | 일반 텍스트 본문. `blocks`가 없을 때 사용 |
+| `images` | `content` 앞에 넣을 이미지 경로 목록. `blocks`가 없을 때 사용 |
+| `category` | 카테고리 이름 (발행 시 적용) |
+| `tags` | 태그 목록 (발행 시 적용) |
+| `publish` | `true`면 공개 발행, 기본 `false`는 임시저장 |
 
 ```json
 {
-  "mcpServers": {
-    "naver-blog": {
-      "command": "uv",
-      "args": ["run", "naver-blog-mcp"],
-      "cwd": "C:\\workdir\\space-cap\\naver-blog-mcp",
-      "env": {
-        "PYTHONIOENCODING": "utf-8"
-      }
-    }
-  }
+  "title": "10월 3일 기록",
+  "blocks": [
+    {"type": "image", "path": "/Users/me/photos/breakfast.jpg"},
+    {"type": "text", "text": "아침은 간단하게 먹었다."},
+    {"type": "image", "path": "/Users/me/photos/boxing.jpg"},
+    {"type": "text", "text": "저녁에는 복싱."}
+  ]
 }
 ```
 
-Claude Desktop 재시작 후 다음과 같이 사용:
+이미지는 JPG, PNG, GIF, BMP, HEIC, HEIF, WebP를 지원하고 장당 10MB까지입니다.
 
-```
-네이버 블로그에 글을 작성해줘.
-제목: MCP 테스트
-내용: Claude가 작성한 첫 번째 글!
-```
+### `naver_blog_list_categories`
 
-### 방법 2: 직접 실행
+블로그의 카테고리 목록을 조회합니다. `.env`에 `NAVER_BLOG_ID`가 필요합니다.
+
+## 개발
 
 ```bash
-# MCP 서버 실행
-uv run naver-blog-mcp
+uv run pytest                                   # 브라우저 없이 도는 단위 테스트
+uv run python tests/manual/live_draft_check.py  # 실제 계정에 임시저장 글 생성 (발행 안 함)
 ```
 
-### 방법 3: 테스트 스크립트
+`tests/manual/`의 스크립트는 실제 네이버에 접속하므로 `pytest`에서 제외되어 있습니다. 실패한 실행의 스크린샷과 Trace는 `playwright-state/`에 남습니다.
 
-```bash
-# 서버 초기화 테스트
-uv run python tests/test_server.py
+## 주의사항
 
-# Tool 핸들러 테스트 (실제 글 작성)
-uv run python tests/test_tools.py
+- 공식 API가 아니라 브라우저 자동화이므로 네이버 UI가 바뀌면 동작하지 않을 수 있습니다.
+- 과도한 자동 게시는 네이버 이용약관 위반으로 제재될 수 있습니다.
+- `.env`와 `playwright-state/`는 Git에 커밋하지 마세요.
+- 네이버 블로그는 Markdown을 지원하지 않습니다. 본문은 일반 텍스트로 입력됩니다.
 
-# 통합 테스트 (전체)
-uv run python tests/test_integration.py
-```
+## 라이선스
 
-## 📁 프로젝트 구조
-
-```
-naver-blog-mcp/
-├── src/
-│   └── naver_blog_mcp/
-│       ├── server.py              # ✅ MCP 서버 메인
-│       ├── config.py              # ✅ 설정 관리
-│       ├── automation/            # Playwright 자동화
-│       │   ├── login.py          # ✅ 로그인 자동화
-│       │   ├── post_actions.py   # ✅ 글쓰기 자동화
-│       │   └── selectors.py      # ✅ DOM 셀렉터
-│       ├── services/              # 비즈니스 로직
-│       │   └── session_manager.py # ✅ 세션 관리
-│       ├── mcp/                   # MCP 프로토콜
-│       │   └── tools.py          # ✅ Tool 정의 및 핸들러
-│       ├── models/                # 데이터 모델
-│       └── utils/                 # 유틸리티
-├── tests/
-│   ├── test_server.py            # ✅ 서버 초기화 테스트
-│   ├── test_tools.py             # ✅ Tool 핸들러 테스트
-│   └── test_integration.py       # ✅ 통합 테스트
-├── docs/
-│   ├── architecture.md           # 아키텍처 설계서
-│   ├── implementation-plan.md    # 구현 계획서
-│   ├── progress.md               # 진행 상황
-│   └── user-guide.md             # ✅ 사용자 가이드
-└── playwright-state/             # 세션 저장 (Git 무시)
-```
-
-## 📊 개발 진행 상황
-
-**Phase 1 완료: 93% (Day 13/14 완료)**
-
-```
-Phase 1 (Week 1-2): █████████████░ 93%
-Phase 2 (Week 3):   ░░░░░░░░░░░░░░  0%
-Phase 3 (Week 4):   ░░░░░░░░░░░░░░  0%
-
-전체 프로젝트:     █████████████░ 52%
-```
-
-### 완료된 마일스톤
-- ✅ **Day 1-3**: 프로젝트 초기 설정 및 기본 자동화
-- ✅ **Day 5-7**: MCP 서버 및 핵심 Tool 구현
-- ✅ **Day 8-10**: 에러 처리 및 재시도 로직
-  - 커스텀 예외 클래스, Playwright 에러 핸들러
-  - tenacity 재시도 (지수 백오프)
-  - Playwright Trace 자동 기록
-- ✅ **Day 11-12**: 이미지 업로드 기능
-  - 파일/Base64 업로드, 단일/다중 이미지
-  - 7개 포맷 지원 (JPG, PNG, GIF, BMP, HEIC, HEIF, WebP)
-  - 10MB 크기 제한, 자동 에러 처리
-- ✅ **Day 13**: 카테고리 목록 조회 및 MCP 서버 연동
-  - Claude Desktop 연동 문서 작성
-  - MCP 서버 인코딩 오류 수정
-  - 카테고리 목록 조회 기능 완전 구현
-
-### 알려진 제한 사항
-- ❌ **Day 14**: Markdown 지원 (구현 불가)
-  - 네이버 블로그는 Markdown을 지원하지 않음
-  - HTML 편집 모드도 스마트에디터 ONE으로 통합되면서 제거됨
-
-자세한 진행 상황은 [docs/progress.md](docs/progress.md)를 참고하세요.
-
-## 🎯 사용 가능한 MCP Tools
-
-### 1. `naver_blog_create_post`
-블로그에 새 글을 작성합니다.
-
-**파라미터:**
-- `title` (필수): 글 제목
-- `content` (필수): 글 본문
-- `category` (선택): 카테고리 이름
-- `tags` (선택): 태그 배열
-- `images` (선택): 이미지 파일 경로 배열
-- `publish` (선택): 즉시 발행 여부 (기본: true)
-
-### 2. `naver_blog_list_categories`
-블로그의 카테고리 목록을 조회합니다.
-
-**파라미터:** 없음
-
-## 🔧 개발
-
-### 테스트 실행
-
-```bash
-# 모든 테스트
-uv run pytest tests/ -v
-
-# 로그인 테스트
-uv run python tests/test_login.py
-
-# 글쓰기 테스트
-uv run python tests/test_post_write.py
-```
-
-### 코드 포매팅
-
-```bash
-# Black 포매팅
-uv run black src/ tests/
-
-# Ruff 린팅
-uv run ruff check src/ tests/
-
-# Mypy 타입 체킹
-uv run mypy src/
-```
-
-### Playwright 디버깅
-
-```bash
-# Inspector 모드
-PWDEBUG=1 uv run python tests/test_post_write.py
-
-# 헤드 모드 (브라우저 보이기)
-HEADLESS=false uv run python tests/test_post_write.py
-
-# 느린 모드 (액션 사이 딜레이)
-SLOW_MO=500 uv run python tests/test_post_write.py
-```
-
-## ⚠️ 주의사항
-
-### CAPTCHA
-- 헤드리스 모드에서 CAPTCHA가 발생할 수 있습니다
-- `HEADLESS=false`로 설정하면 수동으로 CAPTCHA를 풀 수 있습니다
-
-### 네이버 이용약관
-- 과도한 자동화 사용 자제
-- 스팸성 콘텐츠 게시 금지
-- 정상적인 사용 패턴 유지
-
-### 세션 관리
-- 세션은 최대 24시간 유효
-- `playwright-state/` 폴더는 절대 Git에 커밋하지 마세요
-- `.env` 파일도 Git에 커밋하지 마세요
-
-## 📚 문서
-
-### 사용자용
-- **[배포 가이드](docs/deployment-guide.md)** - 설치 및 배포 완전 가이드 ⭐
-- [설치 가이드](docs/installation-guide.md) - 상세 설치 방법
-- [Claude Desktop 가이드](docs/claude-desktop-guide.md) - Claude Desktop 연동
-- [사용자 가이드](docs/user-guide.md) - 사용 방법 및 예제
-
-### 개발자용
-- [아키텍처 설계서](docs/architecture.md) - 상세 시스템 아키텍처
-- [구현 계획서](docs/implementation-plan.md) - 4주 구현 로드맵
-- [진행 상황](docs/progress.md) - 프로젝트 진행 현황
-
-## 🎯 사용 예시
-
-### 예시 1: 간단한 글 작성
-
-Claude에게 다음과 같이 요청:
-
-```
-네이버 블로그에 글을 써줘.
-제목: 오늘의 개발 일지
-내용: MCP 서버를 사용해서 자동으로 글을 작성했다. 정말 편리하다!
-```
-
-### 예시 2: 기술 블로그 작성
-
-```
-Playwright의 장점에 대한 기술 블로그를 작성해줘.
-제목은 "Playwright로 웹 자동화 시작하기"로 하고,
-Selenium과의 비교, 코드 예제를 포함해줘.
-```
-
-### 예시 3: 마크다운 형식
-
-```
-다음 마크다운을 네이버 블로그 글로 작성해줘:
-
-제목: Python asyncio 입문
-
-# asyncio란?
-Python의 비동기 프로그래밍 라이브러리입니다.
-
-## 주요 개념
-- Event Loop
-- Coroutines
-- Tasks
-```
-
-## 🤝 기여
-
-이슈 및 PR을 환영합니다!
-
-## 📄 라이선스
-
-MIT License
-
-## 📞 문의
-
-GitHub Issues를 통해 문의해주세요.
-
----
-
-**🤖 Generated with [Claude Code](https://claude.com/claude-code)**
+MIT License. 원본: [space-cap/naver-blog-mcp](https://github.com/space-cap/naver-blog-mcp)

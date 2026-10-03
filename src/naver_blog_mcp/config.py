@@ -2,7 +2,6 @@
 
 import os
 from pathlib import Path
-from typing import Optional
 
 from dotenv import load_dotenv
 
@@ -11,25 +10,38 @@ project_root = Path(__file__).parent.parent.parent
 load_dotenv(project_root / ".env")
 
 
+def _resolve_path(value: str) -> str:
+    """상대 경로를 프로젝트 루트 기준 절대 경로로 변환합니다."""
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = project_root / path
+    return str(path)
+
+
 class Config:
     """프로젝트 설정 클래스."""
 
-    # 네이버 블로그 계정
+    # 네이버 블로그 계정 (모두 선택 사항)
+    # NAVER_BLOG_ID: 글쓰기 URL과 카테고리 조회에 사용
+    # NAVER_BLOG_PASSWORD: 설정하면 세션 만료 시 자동 로그인을 시도 (권장하지 않음)
     NAVER_BLOG_ID: str = os.getenv("NAVER_BLOG_ID", "")
     NAVER_BLOG_PASSWORD: str = os.getenv("NAVER_BLOG_PASSWORD", "")
 
     # Playwright 설정
     HEADLESS: bool = os.getenv("HEADLESS", "true").lower() == "true"
     SLOW_MO: int = int(os.getenv("SLOW_MO", "0"))
+    # "chrome"으로 설정하면 설치된 Google Chrome을 사용 (비우면 번들 Chromium)
+    BROWSER_CHANNEL: str = os.getenv("BROWSER_CHANNEL", "")
 
     # 로깅 설정
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
 
     # 세션 설정
-    SESSION_STORAGE_PATH: str = os.getenv(
-        "SESSION_STORAGE_PATH", "playwright-state/auth.json"
+    STATE_DIR: str = _resolve_path(os.getenv("STATE_DIR", "playwright-state"))
+    SESSION_STORAGE_PATH: str = _resolve_path(
+        os.getenv("SESSION_STORAGE_PATH", "playwright-state/auth.json")
     )
-    SESSION_VALIDITY_HOURS: int = int(os.getenv("SESSION_VALIDITY_HOURS", "24"))
+    LOGIN_TIMEOUT_SECONDS: int = int(os.getenv("LOGIN_TIMEOUT_SECONDS", "300"))
 
     # Playwright 브라우저 설정
     BROWSER_ARGS: list[str] = [
@@ -37,36 +49,24 @@ class Config:
         "--disable-dev-shm-usage",
     ]
 
-    USER_AGENT: str = (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
-    )
-
-    VIEWPORT: dict[str, int] = {"width": 1920, "height": 1080}
+    VIEWPORT: dict[str, int] = {"width": 1440, "height": 900}
 
     @classmethod
-    def validate(cls) -> None:
-        """설정 유효성 검사."""
-        if not cls.NAVER_BLOG_ID:
-            raise ValueError("NAVER_BLOG_ID가 설정되지 않았습니다.")
-        if not cls.NAVER_BLOG_PASSWORD:
-            raise ValueError("NAVER_BLOG_PASSWORD가 설정되지 않았습니다.")
-
-    @classmethod
-    def get_browser_config(cls) -> dict:
+    def get_browser_config(cls, headless: bool | None = None) -> dict:
         """Playwright 브라우저 설정을 반환합니다."""
-        return {
-            "headless": cls.HEADLESS,
+        browser_config: dict = {
+            "headless": cls.HEADLESS if headless is None else headless,
             "args": cls.BROWSER_ARGS,
             "slow_mo": cls.SLOW_MO,
         }
+        if cls.BROWSER_CHANNEL:
+            browser_config["channel"] = cls.BROWSER_CHANNEL
+        return browser_config
 
     @classmethod
     def get_context_config(cls) -> dict:
         """Playwright 컨텍스트 설정을 반환합니다."""
         return {
-            "user_agent": cls.USER_AGENT,
             "viewport": cls.VIEWPORT,
             "locale": "ko-KR",
             "timezone_id": "Asia/Seoul",
@@ -78,9 +78,9 @@ config = Config()
 
 
 # 편의 함수
-def get_browser_config() -> dict:
+def get_browser_config(headless: bool | None = None) -> dict:
     """Playwright 브라우저 설정을 반환합니다."""
-    return config.get_browser_config()
+    return config.get_browser_config(headless)
 
 
 def get_context_config() -> dict:

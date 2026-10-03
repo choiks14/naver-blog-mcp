@@ -7,21 +7,22 @@ from typing import Optional
 
 from playwright.async_api import BrowserContext
 
+from ..config import config
+
 logger = logging.getLogger(__name__)
 
 
 class TraceManager:
     """Playwright Trace 녹화 및 관리."""
 
-    def __init__(self, traces_dir: str = "playwright-state/traces"):
+    def __init__(self, traces_dir: Optional[str] = None):
         """
         TraceManager 초기화.
 
         Args:
             traces_dir: Trace 파일 저장 디렉토리
         """
-        self.traces_dir = Path(traces_dir)
-        self.traces_dir.mkdir(parents=True, exist_ok=True)
+        self.traces_dir = Path(traces_dir or Path(config.STATE_DIR) / "traces")
         self.is_tracing = False
         self.current_trace_name: Optional[str] = None
 
@@ -79,10 +80,18 @@ class TraceManager:
             return None
 
         try:
+            # 성공한 작업의 Trace는 저장하지 않는다 (매 실행마다 쌓이는 것을 방지)
+            if not success:
+                self.traces_dir.mkdir(parents=True, exist_ok=True)
+            else:
+                await context.tracing.stop()
+                self.is_tracing = False
+                self.current_trace_name = None
+                return None
+
             # 파일명 생성
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            status = "success" if success else "error"
-            filename = f"{self.current_trace_name}_{status}_{timestamp}.zip"
+            filename = f"{self.current_trace_name}_error_{timestamp}.zip"
             filepath = self.traces_dir / filename
 
             # Trace 저장

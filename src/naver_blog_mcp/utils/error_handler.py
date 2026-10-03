@@ -7,6 +7,7 @@ from typing import Optional
 
 from playwright.async_api import Page, Error as PlaywrightError, TimeoutError as PlaywrightTimeoutError
 
+from ..config import config
 from .exceptions import (
     ElementNotFoundError,
     NavigationError,
@@ -122,7 +123,7 @@ async def save_error_screenshot(
         저장된 스크린샷 경로
     """
     # 스크린샷 디렉토리 생성
-    screenshot_dir = Path("playwright-state/screenshots")
+    screenshot_dir = Path(config.STATE_DIR) / "screenshots"
     screenshot_dir.mkdir(parents=True, exist_ok=True)
 
     # 파일명 생성
@@ -151,7 +152,7 @@ async def save_page_html(
         저장된 HTML 파일 경로
     """
     # HTML 디렉토리 생성
-    html_dir = Path("playwright-state/html")
+    html_dir = Path(config.STATE_DIR) / "html"
     html_dir.mkdir(parents=True, exist_ok=True)
 
     # 파일명 생성

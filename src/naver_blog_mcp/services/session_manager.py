@@ -1,13 +1,19 @@
 """네이버 블로그 세션 관리자."""
 
-import os
-from datetime import datetime, timedelta
+import logging
 from pathlib import Path
-from typing import Optional
 
 from playwright.async_api import Browser, BrowserContext
 
-from ..automation.login import login_to_naver, verify_login_session, NaverLoginError
+from ..automation.login import (
+    NaverLoginError,
+    login_to_naver,
+    save_session,
+    verify_login_session,
+)
+from ..config import get_context_config
+
+logger = logging.getLogger(__name__)
 
 
 class SessionManager:
@@ -15,66 +21,31 @@ class SessionManager:
 
     def __init__(
         self,
-        user_id: str,
-        password: str,
-        storage_path: str = "playwright-state/auth.json",
-        session_validity_hours: int = 24,
+        storage_path: str,
+        user_id: str = "",
+        password: str = "",
     ):
         """
         세션 매니저 초기화.
 
         Args:
-            user_id: 네이버 아이디
-            password: 네이버 비밀번호
             storage_path: 세션 저장 경로
-            session_validity_hours: 세션 유효 시간 (시간)
+            user_id: 네이버 아이디 (자동 로그인용, 선택)
+            password: 네이버 비밀번호 (자동 로그인용, 선택)
         """
+        self.storage_path = storage_path
         self.user_id = user_id
         self.password = password
-        self.storage_path = storage_path
-        self.session_validity_hours = session_validity_hours
-        self.last_login_time: Optional[datetime] = None
 
-    def is_session_file_valid(self) -> bool:
-        """
-        세션 파일이 유효한지 확인합니다.
-
-        Returns:
-            세션 파일 유효 여부
-        """
-        # 1. 파일 존재 여부
-        if not Path(self.storage_path).exists():
-            return False
-
-        # 2. 파일 수정 시간 확인
-        file_mtime = datetime.fromtimestamp(Path(self.storage_path).stat().st_mtime)
-        elapsed = datetime.now() - file_mtime
-
-        # 설정된 유효 시간 이내인지 확인
-        if elapsed > timedelta(hours=self.session_validity_hours):
-            return False
-
-        return True
+    def has_session_file(self) -> bool:
+        """저장된 세션 파일이 있는지 확인합니다."""
+        return Path(self.storage_path).exists()
 
     async def is_session_valid(self, context: BrowserContext) -> bool:
-        """
-        실제 네이버 페이지에 접속하여 세션 유효성을 검사합니다.
-
-        Args:
-            context: Playwright BrowserContext 객체
-
-        Returns:
-            세션 유효 여부
-        """
-        # 1. 파일 유효성 확인
-        if not self.is_session_file_valid():
-            return False
-
-        # 2. 실제 페이지 접속 테스트
+        """실제 네이버 페이지에 접속하여 세션 유효성을 검사합니다."""
         page = await context.new_page()
         try:
-            is_valid = await verify_login_session(page)
-            return is_valid
+            return await verify_login_session(page)
         finally:
             await page.close()
 
@@ -82,83 +53,52 @@ class SessionManager:
         self, browser: Browser, headless: bool = True
     ) -> BrowserContext:
         """
-        유효한 세션이 있으면 재사용하고, 없으면 새로 로그인합니다.
+        저장된 세션이 유효하면 재사용합니다.
 
-        Args:
-            browser: Playwright Browser 객체
-            headless: 헤드리스 모드 여부
-
-        Returns:
-            BrowserContext 객체
+        세션이 없거나 만료된 경우, 아이디/비밀번호가 설정되어 있으면 자동 로그인을
+        시도하고, 그렇지 않으면 `naver-blog-mcp login` 실행을 안내하는 에러를 냅니다.
 
         Raises:
-            NaverLoginError: 로그인 실패 시
+            NaverLoginError: 사용할 수 있는 세션이 없는 경우
         """
-        # 1. 기존 세션 파일이 있고 유효하면 재사용
-        if self.is_session_file_valid():
-            try:
-                context = await browser.new_context(storage_state=self.storage_path)
+        if self.has_session_file():
+            context = await browser.new_context(
+                storage_state=self.storage_path, **get_context_config()
+            )
+            if await self.is_session_valid(context):
+                logger.info(f"저장된 세션 재사용: {self.storage_path}")
+                # 갱신된 쿠키를 다시 저장해 세션 수명을 늘린다
+                await save_session(context, self.storage_path)
+                return context
+            logger.warning("저장된 세션이 만료되었습니다.")
+            await context.close()
 
-                # 실제 로그인 상태 확인
-                if await self.is_session_valid(context):
-                    print(f"저장된 세션 재사용: {self.storage_path}")
-                    return context
-                else:
-                    print("저장된 세션이 만료되었습니다. 재로그인합니다.")
-                    await context.close()
-            except Exception as e:
-                print(f"세션 복원 실패: {e}. 재로그인합니다.")
+        if not (self.user_id and self.password):
+            raise NaverLoginError(
+                "유효한 로그인 세션이 없습니다. "
+                "터미널에서 `uv run naver-blog-mcp login`을 실행해 로그인해 주세요."
+            )
 
-        # 2. 새로 로그인
-        context = await browser.new_context()
+        context = await browser.new_context(**get_context_config())
         page = await context.new_page()
-
         try:
-            result = await login_to_naver(
+            await login_to_naver(
                 page=page,
                 user_id=self.user_id,
                 password=self.password,
                 storage_state_path=self.storage_path,
                 headless=headless,
             )
-
-            self.last_login_time = datetime.now()
-            print(f"{result['message']}")
-            print(f"   세션 저장: {result['storage_state_path']}")
-
             return context
-
-        except NaverLoginError as e:
+        except NaverLoginError:
             await context.close()
-            raise e
+            raise
         finally:
-            await page.close()
-
-    async def refresh_session_if_needed(
-        self, browser: Browser, context: BrowserContext, headless: bool = True
-    ) -> BrowserContext:
-        """
-        필요 시 세션을 갱신합니다.
-
-        Args:
-            browser: Playwright Browser 객체
-            context: 현재 BrowserContext 객체
-            headless: 헤드리스 모드 여부
-
-        Returns:
-            갱신된 또는 기존 BrowserContext 객체
-        """
-        # 세션이 유효하면 그대로 반환
-        if await self.is_session_valid(context):
-            return context
-
-        # 세션이 만료되었으면 재로그인
-        print("세션이 만료되었습니다. 재로그인합니다.")
-        await context.close()
-        return await self.get_or_create_session(browser, headless)
+            if not page.is_closed():
+                await page.close()
 
     def clear_session(self) -> None:
         """저장된 세션 파일을 삭제합니다."""
-        if Path(self.storage_path).exists():
+        if self.has_session_file():
             Path(self.storage_path).unlink()
-            print(f"세션 파일 삭제: {self.storage_path}")
+            logger.info(f"세션 파일 삭제: {self.storage_path}")

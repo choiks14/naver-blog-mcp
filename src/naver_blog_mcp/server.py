@@ -5,27 +5,28 @@ MCP (Model Context Protocol) 서버를 제공합니다.
 """
 
 import asyncio
+import json
 import logging
-import os
+import sys
 from typing import Optional
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import Tool
+from mcp.types import TextContent, Tool
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 
-from .config import get_browser_config, config
+from .automation.login import login_manually
+from .config import config, get_browser_config, get_context_config
 from .services.session_manager import SessionManager
 from .mcp.tools import (
     TOOLS_METADATA,
     handle_create_post,
-    # handle_delete_post,  # 비활성화
     handle_list_categories,
 )
 from .utils.trace_manager import trace_manager
 
-# 로깅 설정
-logging.basicConfig(level=logging.INFO)
+# stdout은 MCP 프로토콜 전용이므로 로그는 stderr로만 보낸다
+logging.basicConfig(level=config.LOG_LEVEL, stream=sys.stderr)
 logger = logging.getLogger(__name__)
 
 
@@ -38,100 +39,72 @@ class NaverBlogMCPServer:
         self.playwright = None
         self.browser: Optional[Browser] = None
         self.context: Optional[BrowserContext] = None
+        self._lock = asyncio.Lock()
 
-        # 설정 검증
-        config.validate()
-
-        # 세션 관리자 초기화
         self.session_manager = SessionManager(
+            storage_path=config.SESSION_STORAGE_PATH,
             user_id=config.NAVER_BLOG_ID,
-            password=config.NAVER_BLOG_PASSWORD
+            password=config.NAVER_BLOG_PASSWORD,
         )
 
-        # Tool 등록
         self._register_tools()
 
     def _register_tools(self):
         """MCP Tool들을 등록합니다."""
-        logger.info("Registering MCP tools...")
 
-        # naver_blog_create_post Tool 등록
         @self.server.call_tool()
-        async def call_tool(name: str, arguments: dict) -> list[dict]:
+        async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             """Tool 호출 핸들러."""
-            logger.info(f"Tool called: {name} with arguments: {arguments}")
+            logger.info(f"Tool called: {name}")
 
-            try:
-                # Trace 시작
-                if self.context:
+            if name not in TOOLS_METADATA:
+                return [TextContent(type="text", text=f"알 수 없는 Tool: {name}")]
+
+            # 브라우저 페이지 하나를 공유하므로 호출을 직렬화한다
+            async with self._lock:
+                try:
+                    await self.ensure_initialized()
                     await trace_manager.start_trace(self.context, name=name)
+                    page = await self.get_page()
 
-                # 페이지 가져오기
-                page = await self.get_page()
+                    if name == "naver_blog_create_post":
+                        result = await handle_create_post(
+                            page=page,
+                            title=arguments["title"],
+                            content=arguments.get("content"),
+                            blocks=arguments.get("blocks"),
+                            category=arguments.get("category"),
+                            tags=arguments.get("tags"),
+                            images=arguments.get("images"),
+                            publish=arguments.get("publish", False),
+                        )
+                    else:
+                        result = await handle_list_categories(page=page)
 
-                # Tool별 핸들러 호출
-                if name == "naver_blog_create_post":
-                    result = await handle_create_post(
-                        page=page,
-                        title=arguments["title"],
-                        content=arguments["content"],
-                        category=arguments.get("category"),
-                        tags=arguments.get("tags"),
-                        images=arguments.get("images"),
-                        publish=arguments.get("publish", True),
+                    await trace_manager.stop_trace(
+                        self.context, success=bool(result.get("success"))
                     )
-                # elif name == "naver_blog_delete_post":
-                #     result = await handle_delete_post(
-                #         page=page, post_url=arguments["post_url"]
-                #     )
-                elif name == "naver_blog_list_categories":
-                    result = await handle_list_categories(page=page)
-                else:
                     return [
-                        {
-                            "type": "text",
-                            "text": f"알 수 없는 Tool: {name}",
-                        }
+                        TextContent(
+                            type="text",
+                            text=json.dumps(result, ensure_ascii=False, indent=2),
+                        )
                     ]
 
-                # Trace 저장 (성공)
-                if self.context:
-                    await trace_manager.stop_trace(self.context, success=True)
+                except Exception as e:
+                    logger.error(f"Tool execution error: {e}", exc_info=True)
+                    if self.context:
+                        await trace_manager.stop_trace(self.context, success=False)
+                    return [TextContent(type="text", text=f"오류 발생: {str(e)}")]
 
-                # 결과를 MCP 형식으로 변환
-                import json
-
-                return [
-                    {
-                        "type": "text",
-                        "text": json.dumps(result, ensure_ascii=False, indent=2),
-                    }
-                ]
-
-            except Exception as e:
-                logger.error(f"Tool execution error: {e}", exc_info=True)
-
-                # Trace 저장 (실패)
-                if self.context:
-                    await trace_manager.stop_trace(self.context, success=False)
-
-                return [
-                    {
-                        "type": "text",
-                        "text": f"오류 발생: {str(e)}",
-                    }
-                ]
-
-        # list_tools 핸들러 등록
         @self.server.list_tools()
         async def list_tools() -> list[Tool]:
             """사용 가능한 Tool 목록을 반환합니다."""
-            # dict를 Tool 객체로 변환
             return [
                 Tool(
                     name=tool_data["name"],
                     description=tool_data["description"],
-                    inputSchema=tool_data["inputSchema"]
+                    inputSchema=tool_data["inputSchema"],
                 )
                 for tool_data in TOOLS_METADATA.values()
             ]
@@ -140,43 +113,47 @@ class NaverBlogMCPServer:
 
     async def initialize(self):
         """브라우저 및 세션 초기화."""
-        logger.info("Initializing Naver Blog MCP Server...")
-
-        # Playwright 시작
         self.playwright = await async_playwright().start()
 
-        # 브라우저 설정 가져오기
         browser_config = get_browser_config()
-
-        # 브라우저 실행
         self.browser = await self.playwright.chromium.launch(**browser_config)
-        logger.info(f"Browser launched (headless={browser_config.get('headless', True)})")
+        logger.info(f"Browser launched (headless={browser_config['headless']})")
 
-        # 세션 복원 또는 새 컨텍스트 생성
-        self.context = await self.session_manager.get_or_create_session(self.browser)
+        self.context = await self.session_manager.get_or_create_session(
+            self.browser, headless=browser_config["headless"]
+        )
         logger.info("Browser context initialized")
+
+    async def ensure_initialized(self):
+        """첫 Tool 호출 시점에 브라우저를 띄웁니다.
+
+        서버 시작 시 로그인 세션이 없어도 MCP 연결 자체는 실패하지 않고,
+        Tool 결과로 로그인 안내를 돌려줄 수 있게 하기 위함입니다.
+        """
+        if self.context:
+            return
+        try:
+            await self.initialize()
+        except Exception:
+            await self.cleanup()
+            raise
 
     async def cleanup(self):
         """리소스 정리."""
-        logger.info("Cleaning up resources...")
-
         if self.context:
             await self.context.close()
-            logger.info("Browser context closed")
+            self.context = None
 
         if self.browser:
             await self.browser.close()
-            logger.info("Browser closed")
+            self.browser = None
 
         if self.playwright:
             await self.playwright.stop()
-            logger.info("Playwright stopped")
+            self.playwright = None
 
     async def get_page(self) -> Page:
-        """새 페이지를 생성하거나 기존 페이지를 반환합니다.
-
-        Returns:
-            Playwright Page 객체
+        """기존 페이지를 재사용하거나 새 페이지를 생성합니다.
 
         Raises:
             RuntimeError: 브라우저 컨텍스트가 초기화되지 않은 경우
@@ -184,33 +161,49 @@ class NaverBlogMCPServer:
         if not self.context:
             raise RuntimeError("Browser context not initialized. Call initialize() first.")
 
-        # 기존 페이지가 있으면 재사용, 없으면 새로 생성
         pages = self.context.pages
         if pages:
             return pages[0]
-        else:
-            return await self.context.new_page()
+        return await self.context.new_page()
 
     async def run(self):
         """MCP 서버 실행."""
         try:
-            # 브라우저 초기화
-            await self.initialize()
-
-            # stdio를 통해 MCP 서버 실행
             async with stdio_server() as (read_stream, write_stream):
                 logger.info("MCP Server started successfully")
                 await self.server.run(
                     read_stream,
                     write_stream,
-                    self.server.create_initialization_options()
+                    self.server.create_initialization_options(),
                 )
-        except Exception as e:
-            logger.error(f"Server error: {e}", exc_info=True)
-            raise
         finally:
-            # 리소스 정리
             await self.cleanup()
+
+
+async def run_login() -> int:
+    """브라우저 창을 띄워 사용자가 직접 로그인하게 하고 세션을 저장합니다."""
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch(**get_browser_config(headless=False))
+        context = await browser.new_context(**get_context_config())
+        page = await context.new_page()
+        try:
+            print(
+                "브라우저 창에서 네이버에 로그인해 주세요. "
+                "'로그인 상태 유지'를 체크하면 세션이 더 오래갑니다.",
+                file=sys.stderr,
+            )
+            result = await login_manually(
+                page,
+                storage_state_path=config.SESSION_STORAGE_PATH,
+                timeout_seconds=config.LOGIN_TIMEOUT_SECONDS,
+            )
+            print(f"로그인 완료. 세션 저장: {result['storage_state_path']}", file=sys.stderr)
+            return 0
+        except Exception as e:
+            print(f"로그인 실패: {e}", file=sys.stderr)
+            return 1
+        finally:
+            await browser.close()
 
 
 async def async_main():
@@ -220,7 +213,13 @@ async def async_main():
 
 
 def main():
-    """동기 서버 엔트리포인트 (CLI 진입점)."""
+    """동기 서버 엔트리포인트 (CLI 진입점).
+
+    `naver-blog-mcp`        MCP 서버 실행
+    `naver-blog-mcp login`  브라우저에서 직접 로그인해 세션 저장
+    """
+    if len(sys.argv) > 1 and sys.argv[1] == "login":
+        sys.exit(asyncio.run(run_login()))
     asyncio.run(async_main())
 
 
