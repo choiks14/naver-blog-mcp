@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
+from naver_blog_mcp.automation.category_actions import parse_category_response
 from naver_blog_mcp.automation.image_upload import (
     MAX_IMAGE_BYTES,
     decode_base64_image,
@@ -124,3 +125,27 @@ async def test_create_post_fails_before_opening_editor_when_image_missing(tmp_pa
     assert result["success"] is False
     assert result["published"] is False
     assert "not found" in result["message"]
+
+
+def test_category_response_skips_dividers_and_all_posts():
+    payload = {
+        "isSuccess": True,
+        "result": {
+            "mylogCategoryList": [
+                {"categoryName": "전체보기", "categoryNo": 0},
+                {"categoryName": "다이어트", "categoryNo": 8, "postCnt": 30},
+                {"categoryName": "", "categoryNo": 9, "divisionLine": True},
+                {"categoryName": "복싱", "categoryNo": 12, "childCategory": True},
+            ]
+        },
+    }
+    categories = parse_category_response(payload, "myblog")
+    assert [c["name"] for c in categories] == ["다이어트", "복싱"]
+    assert categories[0]["categoryNo"] == "8"
+    assert categories[0]["postCount"] == 30
+    assert categories[0]["url"].endswith("blogId=myblog&categoryNo=8")
+    assert categories[1]["isChild"] is True
+
+
+def test_category_response_tolerates_missing_result():
+    assert parse_category_response({"isSuccess": True}, "myblog") == []

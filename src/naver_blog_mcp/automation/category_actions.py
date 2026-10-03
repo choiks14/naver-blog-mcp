@@ -2,199 +2,99 @@
 
 import logging
 import re
-from typing import Dict, Any, List, Optional
+from typing import Any, Dict, Optional
+
 from playwright.async_api import Page
 
-from ..utils.exceptions import NaverBlogError
-from ..utils.error_handler import handle_playwright_error
+from ..config import config
 
 logger = logging.getLogger(__name__)
+
+CATEGORY_API_URL = "https://m.blog.naver.com/api/blogs/{blog_id}/category-list"
+WRITE_ENTRY_URL = "https://blog.naver.com/GoBlogWrite.naver"
+
+
+def parse_category_response(payload: dict, blog_id: str) -> list[dict]:
+    """카테고리 API 응답을 Tool 결과 형식으로 변환합니다.
+
+    구분선과 "전체보기"(categoryNo 0)는 제외합니다.
+    """
+    categories = []
+    for item in (payload.get("result") or {}).get("mylogCategoryList") or []:
+        category_no = item.get("categoryNo")
+        name = (item.get("categoryName") or "").strip()
+        if item.get("divisionLine") or not name or not category_no:
+            continue
+        categories.append(
+            {
+                "name": name,
+                "categoryNo": str(category_no),
+                "url": (
+                    f"https://blog.naver.com/PostList.naver"
+                    f"?blogId={blog_id}&categoryNo={category_no}"
+                ),
+                "postCount": item.get("postCnt", 0),
+                "isChild": bool(item.get("childCategory")),
+            }
+        )
+    return categories
+
+
+async def resolve_blog_id(page: Page) -> Optional[str]:
+    """설정에 블로그 아이디가 없으면 글쓰기 진입 URL의 리다이렉트에서 알아냅니다."""
+    if config.NAVER_BLOG_ID:
+        return config.NAVER_BLOG_ID
+
+    await page.goto(WRITE_ENTRY_URL, wait_until="domcontentloaded")
+    match = re.search(r"blog\.naver\.com/([^/?#]+)", page.url)
+    if match and not match.group(1).endswith(".naver"):
+        return match.group(1)
+    return None
 
 
 async def get_categories(
     page: Page,
-    blog_id: Optional[str] = None
+    blog_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """네이버 블로그의 카테고리 목록을 가져옵니다.
-
-    Args:
-        page: Playwright Page 객체
-        blog_id: 블로그 아이디 (None이면 현재 로그인한 블로그)
 
     Returns:
         {
             "success": bool,
             "message": str,
             "categories": [
-                {
-                    "name": str,           # 카테고리명
-                    "url": str,            # 카테고리 URL
-                    "categoryNo": str,     # 카테고리 번호
-                },
+                {"name": str, "categoryNo": str, "url": str,
+                 "postCount": int, "isChild": bool},
                 ...
             ]
         }
-
-    Raises:
-        NaverBlogError: 카테고리 조회 실패 시
     """
+    failure = {"success": False, "categories": []}
+
     try:
-        logger.info("카테고리 목록 조회 시작")
-
-        # 1. 블로그 메인 페이지로 이동
-        # blog_id가 없으면 현재 페이지의 URL에서 추출하거나 config에서 가져오기
+        blog_id = blog_id or await resolve_blog_id(page)
         if not blog_id:
-            # 현재 URL에서 blog_id 추출 시도
-            current_url = page.url
-            if "blog.naver.com" in current_url:
-                # URL에서 blogId 파라미터 찾기
-                match = re.search(r'blogId=([^&]+)', current_url)
-                if match:
-                    blog_id = match.group(1)
-                else:
-                    # URL 경로에서 blogId 추출 (예: /blogid/...)
-                    match = re.search(r'blog\.naver\.com/([^/?]+)', current_url)
-                    if match:
-                        extracted_id = match.group(1)
-                        # "PostList", "MyBlog" 등의 경로가 아닌 경우에만 blog_id로 사용
-                        if extracted_id not in ["PostList", "MyBlog", "PostView"]:
-                            blog_id = extracted_id
+            return {**failure, "message": "블로그 아이디를 확인할 수 없습니다."}
 
-            # 여전히 blog_id가 없으면 config에서 가져오기
-            if not blog_id:
-                from ..config import config as app_config
-                blog_id = app_config.NAVER_BLOG_ID
-                logger.info(f"config에서 blog_id 가져옴: {blog_id}")
+        response = await page.context.request.get(
+            CATEGORY_API_URL.format(blog_id=blog_id),
+            headers={"Referer": f"https://m.blog.naver.com/{blog_id}"},
+        )
+        if not response.ok:
+            return {**failure, "message": f"카테고리 조회 실패 (HTTP {response.status})"}
 
-        blog_url = f"https://blog.naver.com/{blog_id}"
-        await page.goto(blog_url, wait_until="networkidle")
-        logger.info(f"블로그 페이지 접근: {blog_url}")
+        payload = await response.json()
+        if not payload.get("isSuccess"):
+            return {**failure, "message": "카테고리 조회 요청이 거부되었습니다."}
 
-        # 2. iframe 접근
-        try:
-            iframe_element = await page.wait_for_selector(
-                "iframe#mainFrame",
-                timeout=10000
-            )
-            main_frame = await iframe_element.content_frame()
-            logger.info("iframe#mainFrame 접근 성공")
-        except Exception as e:
-            logger.error(f"iframe 접근 실패: {e}")
-            return {
-                "success": False,
-                "message": "블로그 페이지 구조를 찾을 수 없습니다",
-                "categories": []
-            }
-
-        # 3. 카테고리 링크 찾기
-        # PostList 링크는 카테고리 링크를 나타냄
-        try:
-            category_links = await main_frame.query_selector_all(
-                "a[href*='PostList']"
-            )
-            logger.info(f"PostList 링크 {len(category_links)}개 발견")
-        except Exception as e:
-            logger.error(f"카테고리 링크 조회 실패: {e}")
-            return {
-                "success": False,
-                "message": f"카테고리 조회 중 오류 발생: {str(e)}",
-                "categories": []
-            }
-
-        # 4. 카테고리 정보 추출
-        categories = []
-        seen_category_nos = set()  # categoryNo로 중복 제거
-        seen_names = set()  # 이름으로도 중복 제거
-
-        for link in category_links:
-            try:
-                text = await link.text_content()
-                href = await link.get_attribute("href")
-
-                if not text or not href:
-                    continue
-
-                name = text.strip()
-
-                # 필터링 조건
-                # 1. 텍스트가 있어야 함
-                # 2. 너무 길지 않아야 함 (카테고리명은 짧음)
-                # 3. 숫자만 있는 경우 제외 (페이지 번호)
-                # 4. 특정 키워드 제외
-                if not name or len(name) > 50:
-                    continue
-
-                if name.isdigit():
-                    continue
-
-                if name in ["블로그 홈", "전체보기"]:
-                    continue
-
-                # blog_id가 알려진 경우 블로그 이름 제외
-                if blog_id and name == blog_id:
-                    continue
-
-                # URL에 특정 파라미터가 있으면 제외
-                # currentPage, from=postList 등이 있으면 페이징이나 내비게이션 링크
-                if "currentPage=" in href or "parentCategoryNo=" in href:
-                    continue
-
-                # URL에서 categoryNo 추출
-                category_no = None
-                if "categoryNo=" in href:
-                    match = re.search(r'categoryNo=(\d+)', href)
-                    if match:
-                        category_no = match.group(1)
-
-                # categoryNo가 있는 경우만 추가 (실제 카테고리)
-                # categoryNo가 0인 "전체보기"는 제외
-                # 이미 추가한 categoryNo면 건너뛰기 (중복 제거)
-                if category_no and category_no != "0":
-                    # 같은 categoryNo가 이미 있으면 건너뛰기
-                    if category_no in seen_category_nos:
-                        continue
-
-                    # 같은 이름이 이미 있으면 건너뛰기
-                    if name in seen_names:
-                        continue
-
-                    category_info = {
-                        "name": name,
-                        "url": href if href.startswith("http") else f"https://blog.naver.com{href}",
-                        "categoryNo": category_no,
-                    }
-                    categories.append(category_info)
-                    seen_category_nos.add(category_no)
-                    seen_names.add(name)
-                    logger.debug(f"카테고리 추가: {name} (categoryNo={category_no})")
-
-            except Exception as e:
-                logger.warning(f"카테고리 정보 추출 중 오류: {e}")
-                continue
-
-        # 5. 결과 반환
-        if categories:
-            logger.info(f"카테고리 {len(categories)}개 조회 완료")
-            return {
-                "success": True,
-                "message": f"{len(categories)}개의 카테고리를 찾았습니다",
-                "categories": categories
-            }
-        else:
-            logger.info("카테고리가 없습니다")
-            return {
-                "success": True,
-                "message": "카테고리가 없습니다",
-                "categories": []
-            }
+        categories = parse_category_response(payload, blog_id)
+        logger.info(f"카테고리 {len(categories)}개 조회 완료")
+        return {
+            "success": True,
+            "message": f"{len(categories)}개의 카테고리를 찾았습니다",
+            "categories": categories,
+        }
 
     except Exception as e:
-        # Playwright 에러를 커스텀 에러로 변환
-        custom_error = await handle_playwright_error(e, page, "get_categories")
-        logger.error(f"카테고리 조회 실패: {custom_error}", exc_info=True)
-
-        return {
-            "success": False,
-            "message": f"카테고리 조회 중 오류 발생: {str(custom_error)}",
-            "categories": []
-        }
+        logger.error(f"카테고리 조회 실패: {e}", exc_info=True)
+        return {**failure, "message": f"카테고리 조회 중 오류 발생: {str(e)}"}

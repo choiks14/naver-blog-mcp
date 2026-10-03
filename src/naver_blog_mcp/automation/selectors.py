@@ -19,13 +19,14 @@ EDITOR_TEXT_PARAGRAPH = ".se-component.se-text .se-text-paragraph"
 # 에디터 팝업
 EDITOR_POPUP_CANCEL = ".se-popup-alert-confirm .se-popup-button-cancel"
 EDITOR_HELP_CLOSE = "button.se-help-panel-close-button"
-EDITOR_TOAST = ".se-toast-popup, [class*='toast']"
 
 # 임시저장 / 발행
 EDITOR_SAVE_BUTTON = "button[class*='save_btn']"
+EDITOR_SAVE_COUNT = "button[class*='save_count_btn']"
+EDITOR_SAVE_TOAST = ".se-toast-popup:has-text('임시저장')"
 EDITOR_PUBLISH_OPEN = "button[class*='publish_btn']"
 EDITOR_PUBLISH_LAYER = "[class*='layer_publish'], [class*='option_area']"
 EDITOR_PUBLISH_CONFIRM = "button[class*='confirm_btn']"
 EDITOR_CATEGORY_BUTTON = "button[class*='selectbox_button']"
-EDITOR_CATEGORY_ITEM = "[class*='option_list'] label, [class*='option_list'] li"
+EDITOR_CATEGORY_ITEM = "[class*='option_list'] label"
 EDITOR_TAG_INPUT = "input#tag-input, input[class*='tag_input']"

@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import re
 import sys
 from typing import Any, Dict, Optional
 
@@ -19,10 +20,11 @@ from .selectors import (
     EDITOR_PUBLISH_OPEN,
     EDITOR_ROOT,
     EDITOR_SAVE_BUTTON,
+    EDITOR_SAVE_COUNT,
+    EDITOR_SAVE_TOAST,
     EDITOR_TAG_INPUT,
     EDITOR_TEXT_PARAGRAPH,
     EDITOR_TITLE,
-    EDITOR_TOAST,
 )
 
 logger = logging.getLogger(__name__)
@@ -155,8 +157,9 @@ async def fill_post_blocks(page: Page, frame: Frame, blocks: list[dict]) -> int:
                 await upload_image(page, frame, block["path"])
                 images_uploaded += 1
             else:
-                # 앞 블록과 문단을 분리한다
+                # 연속된 텍스트 블록은 빈 줄로 문단을 분리한다
                 if index > 0 and blocks[index - 1]["type"] == "text":
+                    await page.keyboard.press("Enter")
                     await page.keyboard.press("Enter")
                 await type_text(page, block["text"])
         return images_uploaded
@@ -164,6 +167,15 @@ async def fill_post_blocks(page: Page, frame: Frame, blocks: list[dict]) -> int:
         raise
     except Exception as e:
         raise NaverBlogPostError(f"본문 입력 중 오류: {str(e)}")
+
+
+async def _saved_draft_count(frame: Frame) -> Optional[int]:
+    """저장 버튼 옆에 표시되는 임시저장 글 개수를 읽습니다."""
+    try:
+        text = await frame.locator(EDITOR_SAVE_COUNT).first.inner_text(timeout=2000)
+        return int(text.strip())
+    except Exception:
+        return None
 
 
 async def save_draft(page: Page, frame: Frame) -> Dict[str, Any]:
@@ -176,10 +188,19 @@ async def save_draft(page: Page, frame: Frame) -> Dict[str, Any]:
     if await button.count() == 0:
         raise NaverBlogPostError("저장 버튼을 찾을 수 없습니다.")
 
+    count_before = await _saved_draft_count(frame)
     await button.click()
-    try:
-        await frame.locator(EDITOR_TOAST).first.wait_for(state="visible", timeout=10000)
-    except PlaywrightTimeout:
+
+    # 완료 토스트가 뜨거나 저장 개수가 늘면 성공으로 본다
+    deadline = asyncio.get_event_loop().time() + 15
+    while asyncio.get_event_loop().time() < deadline:
+        if await frame.locator(EDITOR_SAVE_TOAST).count() > 0:
+            break
+        count_after = await _saved_draft_count(frame)
+        if count_before is not None and count_after is not None and count_after > count_before:
+            break
+        await asyncio.sleep(0.3)
+    else:
         raise NaverBlogPostError("임시저장 완료를 확인하지 못했습니다.")
 
     return {
@@ -194,7 +215,9 @@ async def _select_category(frame: Frame, category: str) -> bool:
     """발행 설정 레이어에서 카테고리를 선택합니다."""
     try:
         await frame.locator(EDITOR_CATEGORY_BUTTON).first.click(timeout=5000)
-        item = frame.locator(EDITOR_CATEGORY_ITEM).filter(has_text=category).first
+        item = frame.locator(EDITOR_CATEGORY_ITEM).filter(
+            has_text=re.compile(rf"^\s*{re.escape(category.strip())}\s*$")
+        ).first
         await item.click(timeout=5000)
         return True
     except Exception as e:
